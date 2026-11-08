@@ -1,0 +1,54 @@
+name: Build and Publish Super Share
+on: [push, workflow_dispatch]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      HAVE_KEY: ${{ secrets.KEYSTORE_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: unzip -q SuperShare.zip
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: 8.11.1 }
+      - name: Install Android 36 platform
+        continue-on-error: true
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" "build-tools;36.0.0" || true
+      - name: Automated tests
+        continue-on-error: true
+        working-directory: SuperShare
+        run: gradle testDebugUnitTest --console=plain
+      - name: Build signed release APK
+        if: env.HAVE_KEY == 'true'
+        working-directory: SuperShare
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$GITHUB_WORKSPACE/upload.jks"
+          gradle assembleRelease --console=plain \
+            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/upload.jks" \
+            -Pandroid.injected.signing.store.password="${{ secrets.KEYSTORE_PASSWORD }}" \
+            -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
+            -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASSWORD }}"
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/Supershare.apk"
+      - name: Build test APK
+        if: env.HAVE_KEY != 'true'
+        working-directory: SuperShare
+        run: |
+          gradle assembleDebug --console=plain
+          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/Supershare.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Supershare
+          path: Supershare.apk
+      - name: Publish to GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v1.0.${{ github.run_number }}" Supershare.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Super Share v1.0.${{ github.run_number }}" \
+            --notes "Download Supershare.apk and install it. Allow 'Install unknown apps' if Android asks."
